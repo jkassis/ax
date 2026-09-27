@@ -91,6 +91,10 @@ message TaskSpec {
   // debug enables the in-container guest services (process execution and file
   // access) that back `ax ssh`. Off by default.
   bool debug = 10;
+  // working_directory is the absolute directory in the image from which the
+  // task command starts. When empty, the first workspace path remains the
+  // default for compatibility with interactive development tasks.
+  string working_directory = 11;
 }
 
 message EnvVar {
@@ -384,4 +388,3 @@ message DeleteModelRequest {
 }
 
 message DeleteModelResponse {}
-

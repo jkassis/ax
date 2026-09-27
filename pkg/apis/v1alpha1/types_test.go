@@ -411,6 +411,9 @@ func TestValidateTask(t *testing.T) {
 	}{
 		{name: "nil spec"},
 		{name: "no workspaces", spec: &v1alpha1.TaskSpec{}},
+		{name: "absolute working directory", spec: &v1alpha1.TaskSpec{WorkingDirectory: "/app"}},
+		{name: "relative working directory", spec: &v1alpha1.TaskSpec{WorkingDirectory: "app"}, wantErr: "must be an absolute clean path"},
+		{name: "unclean working directory", spec: &v1alpha1.TaskSpec{WorkingDirectory: "/app/../tmp"}, wantErr: "must be an absolute clean path"},
 		{name: "list of one", spec: &v1alpha1.TaskSpec{Workspaces: []*v1alpha1.WorkspaceRef{{Name: "a"}}}},
 		{
 			name:    "nameless entry with path",

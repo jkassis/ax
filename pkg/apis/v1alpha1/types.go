@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -251,6 +252,11 @@ func ValidateTask(t *Task) error {
 	spec := t.GetSpec()
 	if spec == nil {
 		return nil
+	}
+	if workingDirectory := spec.GetWorkingDirectory(); workingDirectory != "" {
+		if !path.IsAbs(workingDirectory) || path.Clean(workingDirectory) != workingDirectory {
+			return fmt.Errorf("spec.workingDirectory %q must be an absolute clean path", workingDirectory)
+		}
 	}
 	refs := spec.WorkspaceRefs()
 	paths := spec.WorkspacePaths()
