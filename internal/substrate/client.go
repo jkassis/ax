@@ -256,6 +256,13 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 				Name:      "workspace",
 				MountPath: "/workspace",
 			}},
+			SecurityContext: &ateapipb.SecurityContext{
+				Capabilities:           &ateapipb.Capabilities{Drop: []string{"ALL"}},
+				RunAsUser:              65532,
+				RunAsGroup:             65532,
+				ReadOnlyRootFilesystem: true,
+				NoNewPrivileges:        true,
+			},
 		}},
 		Volumes: []*ateapipb.Volume{{
 			Name:       "workspace",
@@ -453,12 +460,12 @@ func (c *Client) ApplyEgressPolicy(ctx context.Context, atespace, actorName stri
 	}
 
 	var patterns []string
-	var allowAll bool
+	var allowPublic bool
 	var cidrs []string
 
 	for _, h := range allowlist.Hosts {
-		if h.Host == "*" || h.Host == "0.0.0.0/0" {
-			allowAll = true
+		if h.Host == "*" || h.Host == "0.0.0.0/0" || h.Host == "::/0" {
+			allowPublic = true
 			break
 		}
 		if strings.Contains(h.Host, "/") {
@@ -469,9 +476,9 @@ func (c *Client) ApplyEgressPolicy(ctx context.Context, atespace, actorName stri
 	}
 
 	var rules []*ateapipb.EgressRule
-	if allowAll {
+	if allowPublic {
 		rules = append(rules, &ateapipb.EgressRule{
-			All: &emptypb.Empty{},
+			Public: &emptypb.Empty{},
 		})
 	} else {
 		if len(patterns) > 0 {
