@@ -66,7 +66,7 @@ func TestWorkerReconciliation(t *testing.T) {
 		Spec: &v1alpha1.GatewaySpec{
 			Egress: &v1alpha1.EgressConfig{
 				Allowlist: &v1alpha1.EgressAllowlist{
-					Hosts: []*v1alpha1.HostRule{{Host: "api.openai.com"}},
+					Hosts: []*v1alpha1.HostRule{{Host: "api.openai.com", Port: 443}},
 				},
 			},
 		},

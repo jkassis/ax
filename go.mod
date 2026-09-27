@@ -23,4 +23,4 @@ require (
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )
 
-replace github.com/agent-substrate/substrate => github.com/jkassis/substrate v0.2.1-0.20260927195355-e4a4cd207f97
+replace github.com/agent-substrate/substrate => github.com/jkassis/substrate v0.2.1-0.20260927211427-4f4f4b161aa2

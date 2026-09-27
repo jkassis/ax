@@ -456,46 +456,9 @@ func (c *Client) DeleteActorTemplate(ctx context.Context, atespace, templateName
 
 // ApplyEgressPolicy applies egress rules to the Actor from a Gateway's allowlist.
 func (c *Client) ApplyEgressPolicy(ctx context.Context, atespace, actorName string, allowlist *v1alpha1.EgressAllowlist) error {
-	if allowlist == nil || len(allowlist.Hosts) == 0 {
-		return nil
-	}
-
-	var patterns []string
-	var allowPublic bool
-	var cidrs []string
-
-	for _, h := range allowlist.Hosts {
-		if h.Host == "*" || h.Host == "0.0.0.0/0" || h.Host == "::/0" {
-			allowPublic = true
-			break
-		}
-		if strings.Contains(h.Host, "/") {
-			cidrs = append(cidrs, h.Host)
-		} else if h.Host != "" {
-			patterns = append(patterns, h.Host)
-		}
-	}
-
-	var rules []*ateapipb.EgressRule
-	if allowPublic {
-		rules = append(rules, &ateapipb.EgressRule{
-			Public: &emptypb.Empty{},
-		})
-	} else {
-		if len(patterns) > 0 {
-			rules = append(rules, &ateapipb.EgressRule{
-				Hostnames: &ateapipb.HostnameRule{
-					Patterns: patterns,
-				},
-			})
-		}
-		if len(cidrs) > 0 {
-			rules = append(rules, &ateapipb.EgressRule{
-				Cidrs: &ateapipb.CIDRRule{
-					Cidrs: cidrs,
-				},
-			})
-		}
+	rules, err := egressRules(allowlist)
+	if err != nil {
+		return err
 	}
 
 	egressPolicy := &ateapipb.EgressPolicy{
@@ -516,7 +479,7 @@ func (c *Client) ApplyEgressPolicy(ctx context.Context, atespace, actorName stri
 		Actor:        actorRef,
 		EgressPolicy: egressPolicy,
 	}
-	_, err := c.control.CreateActorEgressPolicy(ctx, createReq)
+	_, err = c.control.CreateActorEgressPolicy(ctx, createReq)
 	if err != nil {
 		if status.Code(err) == codes.AlreadyExists {
 			existing, getErr := c.control.GetActorEgressPolicy(ctx, &ateapipb.GetActorEgressPolicyRequest{
@@ -540,4 +503,30 @@ func (c *Client) ApplyEgressPolicy(ctx context.Context, atespace, actorName stri
 		return fmt.Errorf("creating egress policy on %s/%s: %w", atespace, actorName, err)
 	}
 	return nil
+}
+
+func egressRules(allowlist *v1alpha1.EgressAllowlist) ([]*ateapipb.EgressRule, error) {
+	var rules []*ateapipb.EgressRule
+	if allowlist != nil {
+		for i, h := range allowlist.Hosts {
+			if h == nil || h.Host == "" {
+				return nil, fmt.Errorf("egress allowlist host %d is empty", i)
+			}
+			if h.Port < 1 || h.Port > 65535 {
+				return nil, fmt.Errorf("egress allowlist host %q has invalid port %d", h.Host, h.Port)
+			}
+			rule := &ateapipb.EgressRule{Ports: []int32{h.Port}}
+			switch {
+			case h.Host == "*" || h.Host == "0.0.0.0/0" || h.Host == "::/0":
+				rule.Public = &emptypb.Empty{}
+			case strings.Contains(h.Host, "/"):
+				rule.Cidrs = &ateapipb.CIDRRule{Cidrs: []string{h.Host}}
+			default:
+				rule.Hostnames = &ateapipb.HostnameRule{Patterns: []string{h.Host}}
+			}
+			rules = append(rules, rule)
+		}
+	}
+
+	return rules, nil
 }
