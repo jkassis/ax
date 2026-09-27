@@ -274,7 +274,7 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
 			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
 			OnResume: &ateapipb.OnResumeConfig{
-				FromData: ateapipb.ResumeSource_RESUME_SOURCE_GOLDEN,
+				FromData: ateapipb.ResumeSource_RESUME_SOURCE_COLD_BOOT,
 			},
 		},
 		SandboxConfig: &ateapipb.SandboxConfig{

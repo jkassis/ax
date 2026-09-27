@@ -223,6 +223,12 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, gat
 	slog.Info("resuming actor on Substrate worker", "actor", actorName)
 	_, workerIP, err := r.client.ResumeActor(ctx, atespace, actorName)
 	if err != nil {
+		// Resume can fail after Substrate has durably created the actor (for
+		// example, when every worker is occupied). Remove that failed attempt
+		// before returning so retries do not strand actors and exhaust the pool.
+		if cleanupErr := r.client.DeleteActor(ctx, atespace, actorName); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("cleaning up actor after failed resume: %w", cleanupErr))
+		}
 		r.setNotReady(task, "ActorResumeFailed", err.Error(), now)
 		task.Status.Phase = "Failed"
 		return task, fmt.Errorf("resuming actor: %w", err)

@@ -16,6 +16,7 @@ package controller_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"testing"
@@ -40,6 +41,7 @@ type mockControlServer struct {
 	deletedActors    []string
 	actorTemplates   map[string]bool
 	deletedTemplates []string
+	resumeErr        error
 }
 
 // noSecrets is a SecretResolver for tests: it never finds a key and never touches a cluster.
@@ -76,6 +78,9 @@ func (m *mockControlServer) ResumeActor(ctx context.Context, req *ateapipb.Resum
 		name = req.Actor.Name
 	}
 	m.resumedActors = append(m.resumedActors, name)
+	if m.resumeErr != nil {
+		return nil, m.resumeErr
+	}
 	wIP := "10.244.1.42"
 	if m.workerIP != "" {
 		wIP = m.workerIP
@@ -93,6 +98,45 @@ func (m *mockControlServer) ResumeActor(ctx context.Context, req *ateapipb.Resum
 		},
 		Resumed: true,
 	}, nil
+}
+
+func TestTaskReconciler_DeletesActorAfterFailedResume(t *testing.T) {
+	ctx := context.Background()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer lis.Close()
+
+	mockSrv := &mockControlServer{resumeErr: errors.New("no free workers available")}
+	grpcServer := grpc.NewServer()
+	ateapipb.RegisterControlServer(grpcServer, mockSrv)
+	go grpcServer.Serve(lis)
+	defer grpcServer.Stop()
+
+	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to create substrate client: %v", err)
+	}
+	defer client.Close()
+
+	reconciler := controller.NewTaskReconciler(client, "test-template", "ax-system")
+	reconciler.SecretResolver = noSecrets
+	task := &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "capacity-task", Atespace: "default"},
+		Spec:     &v1alpha1.TaskSpec{Image: "example.invalid/runtime"},
+	}
+
+	reconciled, err := reconciler.Reconcile(ctx, task, nil)
+	if err == nil {
+		t.Fatal("expected resume failure")
+	}
+	if reconciled.Status.Phase != "Failed" {
+		t.Fatalf("expected failed phase, got %q", reconciled.Status.Phase)
+	}
+	if len(mockSrv.deletedActors) != 1 || mockSrv.deletedActors[0] != "capacity-task" {
+		t.Fatalf("expected failed actor cleanup, got %v", mockSrv.deletedActors)
+	}
 }
 
 func (m *mockControlServer) SuspendActor(ctx context.Context, req *ateapipb.SuspendActorRequest) (*ateapipb.SuspendActorResponse, error) {
