@@ -246,11 +246,12 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Image:   image,
 			Command: command,
 			Env:     envList,
-			Readyz: &ateapipb.ContainerReadyz{
+			WakeupProbe: &ateapipb.ContainerWakeupProbe{
 				HttpGet: &ateapipb.HTTPGetAction{
 					Path: "/readyz",
 					Port: 80,
 				},
+				TimeoutSeconds: 600,
 			},
 			VolumeMounts: []*ateapipb.VolumeMount{{
 				Name:      "workspace",
@@ -268,7 +269,7 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Name:       "workspace",
 			DurableDir: &ateapipb.DurableDirVolumeSource{},
 		}},
-		SnapshotsConfig: &ateapipb.SnapshotsConfig{
+		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation: snapshotsBucket,
 			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
 			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
