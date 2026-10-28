@@ -29,8 +29,24 @@ import (
 type mockAXClient struct {
 	v1alpha1.AXClient
 	createTaskFn      func(ctx context.Context, in *v1alpha1.CreateTaskRequest, opts ...grpc.CallOption) (*v1alpha1.Task, error)
+	getGatewayFn      func(ctx context.Context, in *v1alpha1.GetGatewayRequest, opts ...grpc.CallOption) (*v1alpha1.Gateway, error)
+	updateGatewayFn   func(ctx context.Context, in *v1alpha1.UpdateGatewayRequest, opts ...grpc.CallOption) (*v1alpha1.Gateway, error)
 	getWorkspaceFn    func(ctx context.Context, in *v1alpha1.GetWorkspaceRequest, opts ...grpc.CallOption) (*v1alpha1.Workspace, error)
 	updateWorkspaceFn func(ctx context.Context, in *v1alpha1.UpdateWorkspaceRequest, opts ...grpc.CallOption) (*v1alpha1.Workspace, error)
+}
+
+func (m *mockAXClient) GetGateway(ctx context.Context, in *v1alpha1.GetGatewayRequest, opts ...grpc.CallOption) (*v1alpha1.Gateway, error) {
+	if m.getGatewayFn != nil {
+		return m.getGatewayFn(ctx, in, opts...)
+	}
+	return m.AXClient.GetGateway(ctx, in, opts...)
+}
+
+func (m *mockAXClient) UpdateGateway(ctx context.Context, in *v1alpha1.UpdateGatewayRequest, opts ...grpc.CallOption) (*v1alpha1.Gateway, error) {
+	if m.updateGatewayFn != nil {
+		return m.updateGatewayFn(ctx, in, opts...)
+	}
+	return m.AXClient.UpdateGateway(ctx, in, opts...)
 }
 
 func (m *mockAXClient) CreateTask(ctx context.Context, in *v1alpha1.CreateTaskRequest, opts ...grpc.CallOption) (*v1alpha1.Task, error) {
@@ -120,5 +136,49 @@ spec:
 	}
 	if !strings.Contains(err.Error(), "already exists and is immutable") {
 		t.Errorf("expected error to mention 'already exists and is immutable', got %v", err)
+	}
+}
+
+func TestApplyDocument_CreatesGateway(t *testing.T) {
+	manifestYAML := `
+apiVersion: ax.io/v1alpha1
+kind: Gateway
+metadata:
+  name: session-gateway
+  atespace: product
+spec:
+  listeners:
+    - name: http
+      port: 8080
+      protocol: HTTP
+`
+	var node yaml.Node
+	if err := yaml.Unmarshal([]byte(manifestYAML), &node); err != nil {
+		t.Fatalf("failed to parse YAML: %v", err)
+	}
+
+	updated := false
+	client := &mockAXClient{
+		getGatewayFn: func(context.Context, *v1alpha1.GetGatewayRequest, ...grpc.CallOption) (*v1alpha1.Gateway, error) {
+			return nil, status.Error(codes.NotFound, "gateway not found")
+		},
+		updateGatewayFn: func(_ context.Context, in *v1alpha1.UpdateGatewayRequest, _ ...grpc.CallOption) (*v1alpha1.Gateway, error) {
+			updated = true
+			return in.Gateway, nil
+		},
+	}
+
+	kind, name, outcome, err := applyDocument(context.Background(), client, node.Content[0])
+	if err != nil {
+		t.Fatalf("expected Gateway apply to succeed, got: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected UpdateGateway to be called")
+	}
+	if kind != v1alpha1.KindGateway || name != "session-gateway" || outcome != "created" {
+		t.Fatalf("expected Gateway/session-gateway created, got %s/%s %s", kind, name, outcome)
+	}
+	if normalized, err := normalizeKind("gateways"); err != nil || normalized != v1alpha1.KindGateway {
+		t.Fatalf("expected plural Gateway command normalization, got %q, %v", normalized, err)
 	}
 }

@@ -166,14 +166,17 @@ Usage:
   ax [command] [flags]
 
 Available Commands:
-  apply -f <file>         Apply resources (tasks, workspaces, models) from a file or stdin
+  apply -f <file>         Apply resources (tasks, gateways, workspaces, models) from a file or stdin
   get tasks               List tasks
   get task <name>         Get a specific task
+  get gateways            List gateways
+  get gateway <name>      Get a specific gateway
   get workspaces          List workspaces
   get workspace <name>    Get a specific workspace
   get models              List models
   get model <name>        Get a specific model
   describe task <name>    Show detailed information about a task
+  describe gateway <name> Show detailed information about a gateway
   describe workspace <name> Show detailed information about a workspace
   describe model <name>   Show detailed information about a model
   watch task <name>       Stream live status and condition updates for a task
@@ -181,6 +184,7 @@ Available Commands:
   suspend task <name>     Suspend execution of a task and checkpoint state
   resume task <name>      Resume execution of a suspended task
   delete task <name>      Delete a task
+  delete gateway <name>   Delete a gateway
   delete workspace <name> Delete a workspace
   delete model <name>     Delete a model
   ctx, context            Show active Kubernetes context and AX connection
@@ -275,6 +279,19 @@ func applyDocument(ctx context.Context, client v1alpha1.AXClient, doc *yaml.Node
 		}
 		return head.Kind, res.GetMetadata().GetName(), "created", nil
 
+	case v1alpha1.KindGateway:
+		var gateway v1alpha1.Gateway
+		if err := doc.Decode(&gateway); err != nil {
+			return "", "", "", err
+		}
+		existing, err := client.GetGateway(ctx, &v1alpha1.GetGatewayRequest{Atespace: gateway.GetMetadata().GetAtespace(), Name: gateway.GetMetadata().GetName()})
+		outcome, err := applyOutcome(err, existing.GetSpec(), gateway.GetSpec())
+		if err != nil {
+			return "", "", "", err
+		}
+		res, err := client.UpdateGateway(ctx, &v1alpha1.UpdateGatewayRequest{Gateway: &gateway})
+		return head.Kind, res.GetMetadata().GetName(), outcome, err
+
 	case v1alpha1.KindWorkspace:
 		var ws v1alpha1.Workspace
 		if err := doc.Decode(&ws); err != nil {
@@ -304,7 +321,7 @@ func applyDocument(ctx context.Context, client v1alpha1.AXClient, doc *yaml.Node
 	case "":
 		return "", "", "", errors.New("missing kind")
 	default:
-		return "", "", "", fmt.Errorf("unsupported kind %q (expected Task, Workspace, or Model)", head.Kind)
+		return "", "", "", fmt.Errorf("unsupported kind %q (expected Task, Gateway, Workspace, or Model)", head.Kind)
 	}
 }
 
@@ -400,6 +417,45 @@ func runGet(serverURL, atespace string, args []string) error {
 		return yaml.NewEncoder(os.Stdout).Encode(task)
 	}
 
+	if (resource == "gateways" || resource == "gateway") && len(args) == 1 {
+		resp, err := client.ListGateways(ctx, &v1alpha1.ListGatewaysRequest{Atespace: atespace})
+		if err != nil {
+			return fmt.Errorf("listing gateways: %w", err)
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 8, 3, ' ', 0)
+		fmt.Fprintln(w, "NAME\tATESPACE\tLISTENERS\tEGRESS-HOSTS")
+		for _, gateway := range resp.Gateways {
+			var listeners, hosts []string
+			if gateway.Spec != nil {
+				for _, listener := range gateway.Spec.Listeners {
+					listeners = append(listeners, fmt.Sprintf("%d/%s", listener.Port, listener.Protocol))
+				}
+				if gateway.Spec.Egress != nil && gateway.Spec.Egress.Allowlist != nil {
+					for _, host := range gateway.Spec.Egress.Allowlist.Hosts {
+						hosts = append(hosts, host.Host)
+					}
+				}
+			}
+			listenerText, hostText := strings.Join(listeners, ","), strings.Join(hosts, ",")
+			if listenerText == "" {
+				listenerText = "<none>"
+			}
+			if hostText == "" {
+				hostText = "<none>"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", gateway.GetMetadata().GetName(), gateway.GetMetadata().GetAtespace(), listenerText, hostText)
+		}
+		return w.Flush()
+	}
+
+	if (resource == "gateway" || resource == "gateways") && len(args) >= 2 {
+		gateway, err := client.GetGateway(ctx, &v1alpha1.GetGatewayRequest{Atespace: atespace, Name: args[1]})
+		if err != nil {
+			return fmt.Errorf("getting gateway %q: %w", args[1], err)
+		}
+		return yaml.NewEncoder(os.Stdout).Encode(gateway)
+	}
 
 	if (resource == "workspaces" || resource == "workspace") && len(args) == 1 {
 		resp, err := client.ListWorkspaces(ctx, &v1alpha1.ListWorkspacesRequest{Atespace: atespace})
@@ -494,7 +550,7 @@ func runGet(serverURL, atespace string, args []string) error {
 
 func runDescribe(serverURL, atespace string, args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: ax describe <task|workspace|model> <name>")
+		return fmt.Errorf("usage: ax describe <task|gateway|workspace|model> <name>")
 	}
 	kind := strings.ToLower(args[0])
 	name := args[1]
@@ -607,6 +663,29 @@ func runDescribe(serverURL, atespace string, args []string) error {
 		return nil
 	}
 
+	if kind == "gateway" || kind == "gateways" {
+		gateway, err := client.GetGateway(ctx, &v1alpha1.GetGatewayRequest{Atespace: atespace, Name: name})
+		if err != nil {
+			return fmt.Errorf("getting gateway %q: %w", name, err)
+		}
+		fmt.Printf("Name:         %s\n", gateway.GetMetadata().GetName())
+		fmt.Printf("Atespace:     %s\n", gateway.GetMetadata().GetAtespace())
+		if gateway.Spec != nil {
+			if len(gateway.Spec.Listeners) > 0 {
+				fmt.Println("Listeners:")
+				for _, listener := range gateway.Spec.Listeners {
+					fmt.Printf("  - %s: %d (%s)\n", listener.Name, listener.Port, listener.Protocol)
+				}
+			}
+			if gateway.Spec.Egress != nil && gateway.Spec.Egress.Allowlist != nil && len(gateway.Spec.Egress.Allowlist.Hosts) > 0 {
+				fmt.Println("Egress Allowlist:")
+				for _, host := range gateway.Spec.Egress.Allowlist.Hosts {
+					fmt.Printf("  - %s:%d\n", host.Host, host.Port)
+				}
+			}
+		}
+		return nil
+	}
 
 	task, err := client.GetTask(ctx, &v1alpha1.GetTaskRequest{Atespace: atespace, Name: name})
 	if err != nil {
@@ -636,6 +715,9 @@ func runDescribe(serverURL, atespace string, args []string) error {
 	fmt.Printf("Actor:        %s\n", actor)
 	fmt.Printf("Worker IP:    %s\n", workerIP)
 	if task.Spec != nil {
+		if task.Spec.Gateway != nil {
+			fmt.Printf("Gateway:      %s\n", task.Spec.Gateway.Name)
+		}
 		if refs := task.Spec.WorkspaceRefs(); len(refs) > 0 {
 			paths := task.Spec.WorkspacePaths()
 			fmt.Println("Workspaces:")
@@ -724,7 +806,7 @@ func runWatch(serverURL, atespace string, args []string) error {
 // runDelete removes one resource by kind and name.
 func runDelete(serverURL, atespace string, args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: ax delete <task|workspace|model> <name>")
+		return fmt.Errorf("usage: ax delete <task|gateway|workspace|model> <name>")
 	}
 	kind, err := normalizeKind(args[0])
 	if err != nil {
@@ -763,6 +845,8 @@ func deleteResource(ctx context.Context, client v1alpha1.AXClient, kind, atespac
 	switch kind {
 	case v1alpha1.KindTask:
 		_, err = client.DeleteTask(ctx, &v1alpha1.DeleteTaskRequest{Atespace: atespace, Name: name})
+	case v1alpha1.KindGateway:
+		_, err = client.DeleteGateway(ctx, &v1alpha1.DeleteGatewayRequest{Atespace: atespace, Name: name})
 	case v1alpha1.KindWorkspace:
 		_, err = client.DeleteWorkspace(ctx, &v1alpha1.DeleteWorkspaceRequest{Atespace: atespace, Name: name})
 	case v1alpha1.KindModel:
@@ -788,6 +872,8 @@ func waitForDeletion(ctx context.Context, client v1alpha1.AXClient, kind, atespa
 		switch kind {
 		case v1alpha1.KindTask:
 			_, err = client.GetTask(ctx, &v1alpha1.GetTaskRequest{Atespace: atespace, Name: name})
+		case v1alpha1.KindGateway:
+			_, err = client.GetGateway(ctx, &v1alpha1.GetGatewayRequest{Atespace: atespace, Name: name})
 		case v1alpha1.KindWorkspace:
 			_, err = client.GetWorkspace(ctx, &v1alpha1.GetWorkspaceRequest{Atespace: atespace, Name: name})
 		case v1alpha1.KindModel:
@@ -823,6 +909,8 @@ func normalizeKind(kind string) (string, error) {
 	switch strings.ToLower(strings.TrimSuffix(kind, "s")) {
 	case "task":
 		return v1alpha1.KindTask, nil
+	case "gateway":
+		return v1alpha1.KindGateway, nil
 	case "workspace":
 		return v1alpha1.KindWorkspace, nil
 	case "model":
@@ -830,7 +918,7 @@ func normalizeKind(kind string) (string, error) {
 	case "":
 		return "", errors.New("missing kind")
 	default:
-		return "", fmt.Errorf("unsupported kind %q (expected task, workspace, or model)", kind)
+		return "", fmt.Errorf("unsupported kind %q (expected task, gateway, workspace, or model)", kind)
 	}
 }
 
