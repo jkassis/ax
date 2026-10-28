@@ -1,0 +1,29 @@
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: sites-session-example
+  atespace: sites-example
+spec:
+  image: registry.example/shinetribe/sites-agent-runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  command: ["/usr/local/bin/sites-agent-runtime"]
+  env:
+    - name: PRODUCT_SESSION_ID
+      value: "sites-session-example"
+    - name: PRODUCT_SESSION_GENERATION
+      value: "7"
+    - name: PRODUCT_SESSION_FENCING_TOKEN
+      value: "opaque-sites-fence"
+    - name: MODEL_GATEWAY_BASE_URL
+      value: "http://jargate.example.invalid/v1"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  workspaces:
+    - name: sites-project
+      path: "/workspace/project"
+      goal: "Prepare the declared Sites project workspace"
+  debug: false

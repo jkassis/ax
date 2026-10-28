@@ -1,0 +1,29 @@
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: coach-session-example
+  atespace: coach-example
+spec:
+  image: registry.example/shinetribe/coach-agent-runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  command: ["/usr/local/bin/coach-agent-runtime"]
+  env:
+    - name: PRODUCT_SESSION_ID
+      value: "coach-session-example"
+    - name: PRODUCT_SESSION_GENERATION
+      value: "3"
+    - name: PRODUCT_SESSION_FENCING_TOKEN
+      value: "opaque-coach-fence"
+    - name: MODEL_GATEWAY_BASE_URL
+      value: "http://jargate.example.invalid/v1"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  workspaces:
+    - name: coach-session
+      path: "/workspace/coach"
+      goal: "Prepare the declared coaching workspace"
+  debug: false

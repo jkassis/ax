@@ -118,6 +118,7 @@ Want to see the whole lifecycle end to end? Run [`./demo.sh`](demo.sh). It appli
 | [Architecture](DESIGN.md) | Understand how the control plane fits together, plus the [API reference](DESIGN.md#api-reference). |
 | [Development](docs/development.md) | Build, test, and ship changes to AX itself. |
 | [Roadmap](docs/roadmap.md) | See planned milestones across core specs, actor architecture, agentic environments, and governance. |
+| [Product integration](docs/product-integration.md) | Integrate product-owned sessions with AX tasks without moving product policy or model credentials into AX. |
 
 ## CLI usage
 
