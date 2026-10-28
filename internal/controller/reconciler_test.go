@@ -276,7 +276,8 @@ func TestTaskReconciler_Suspend(t *testing.T) {
 			Atespace: "default",
 		},
 		Spec: &v1alpha1.TaskSpec{
-			Image: "ghrc.io/my-org/my-image",
+			Suspend: true,
+			Image:   "ghrc.io/my-org/my-image",
 		},
 	}
 
@@ -378,7 +379,7 @@ func TestTaskReconciler_WorkspaceReady(t *testing.T) {
 	// Case 3: Suspending the task -> Ready=False (TaskSuspended), but the workspace was
 	// already initialized so WorkspaceReady stays True.
 	task = reconciledReady
-	task.Status.Phase = "Suspended"
+	task.Spec.Suspend = true
 	reconciledSuspended, err := reconciler.Reconcile(ctx, task, nil)
 	if err != nil {
 		t.Fatalf("Reconcile with suspend failed: %v", err)
@@ -393,7 +394,7 @@ func TestTaskReconciler_WorkspaceReady(t *testing.T) {
 	// WorkspaceReady instead of re-polling, so the task is Ready again immediately.
 	mockSrv.workerIP = "127.0.0.1:1"
 	task = reconciledSuspended
-	task.Status.Phase = "Running"
+	task.Spec.Suspend = false
 	reconciledResumed, err := reconciler.Reconcile(ctx, task, nil)
 	if err != nil {
 		t.Fatalf("Reconcile with resume failed: %v", err)

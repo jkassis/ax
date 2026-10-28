@@ -138,7 +138,6 @@ func (s *Server) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequest
 	if task.Status == nil {
 		task.Status = &v1alpha1.TaskStatus{}
 	}
-	task.Status.Phase = "Suspended"
 	if err := s.store.SaveTask(ctx, task); err != nil {
 		return nil, status.Errorf(codes.Internal, "saving task: %v", err)
 	}
@@ -200,10 +199,10 @@ func (s *Server) SuspendTask(ctx context.Context, req *v1alpha1.SuspendTaskReque
 		}
 		return nil, status.Errorf(codes.Internal, "getting task: %v", err)
 	}
-	if task.Status == nil {
-		task.Status = &v1alpha1.TaskStatus{}
+	if task.Spec == nil {
+		task.Spec = &v1alpha1.TaskSpec{}
 	}
-	task.Status.Phase = "Suspended"
+	task.Spec.Suspend = true
 	if err := s.store.SaveTask(ctx, task); err != nil {
 		return nil, status.Errorf(codes.Internal, "suspending task: %v", err)
 	}
@@ -225,10 +224,10 @@ func (s *Server) ResumeTask(ctx context.Context, req *v1alpha1.ResumeTaskRequest
 		}
 		return nil, status.Errorf(codes.Internal, "getting task: %v", err)
 	}
-	if task.Status == nil {
-		task.Status = &v1alpha1.TaskStatus{}
+	if task.Spec == nil {
+		task.Spec = &v1alpha1.TaskSpec{}
 	}
-	task.Status.Phase = "Running"
+	task.Spec.Suspend = false
 	if err := s.store.SaveTask(ctx, task); err != nil {
 		return nil, status.Errorf(codes.Internal, "resuming task: %v", err)
 	}

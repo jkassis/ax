@@ -128,6 +128,12 @@ func TestServerGRPC(t *testing.T) {
 	if task.Metadata.CreationTimestamp == nil {
 		t.Errorf("expected creation timestamp to be populated on applied task")
 	}
+	if task.GetSpec().GetSuspend() {
+		t.Error("new task unexpectedly defaulted to suspended desired state")
+	}
+	if task.GetStatus().GetPhase() != "Pending" {
+		t.Errorf("expected new task phase Pending, got %q", task.GetStatus().GetPhase())
+	}
 
 	listTasksResp, err := client.ListTasks(ctx, &v1alpha1.ListTasksRequest{Atespace: "default"})
 	if err != nil {
@@ -155,18 +161,17 @@ func TestServerGRPC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SuspendTask failed: %v", err)
 	}
-	if suspTask.Status.Phase != "Suspended" {
-		t.Errorf("expected task phase to be 'Suspended', got %q", suspTask.Status.Phase)
+	if suspTask.Spec == nil || !suspTask.Spec.Suspend {
+		t.Errorf("expected task desired state to be suspended")
 	}
 
 	resTask, err := client.ResumeTask(ctx, &v1alpha1.ResumeTaskRequest{Atespace: "default", Name: "grpc-task"})
 	if err != nil {
 		t.Fatalf("ResumeTask failed: %v", err)
 	}
-	if resTask.Status.Phase != "Running" {
-		t.Errorf("expected task phase to be 'Running', got %q", resTask.Status.Phase)
+	if resTask.Spec == nil || resTask.Spec.Suspend {
+		t.Errorf("expected task desired state to be resumed")
 	}
-
 
 	// 5. Workspaces
 	ws, err = client.GetWorkspace(ctx, &v1alpha1.GetWorkspaceRequest{Atespace: "default", Name: "grpc-ws"})

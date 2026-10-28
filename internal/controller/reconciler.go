@@ -155,9 +155,12 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 	}
 
 	// Only launch configuration belongs in the template; status changes
-	// must not create new golden snapshots.
+	// and lifecycle commands must not create new golden snapshots.
 	launchTask := proto.Clone(task).(*v1alpha1.Task)
 	launchTask.Status = nil
+	if launchTask.Spec != nil {
+		launchTask.Spec.Suspend = false
+	}
 	if taskYAML, err := yaml.Marshal(launchTask); err == nil {
 		extraEnv["AX_TASK_YAML"] = string(taskYAML)
 	}
@@ -189,9 +192,10 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		return task, fmt.Errorf("ensuring actor: %w", err)
 	}
 
-	// 4. Suspend or Resume the Actor
-	// Tasks are suspended by default upon creation until explicitly resumed to "Running".
-	if task.Status.Phase == "Suspended" || task.Status.Phase == "" {
+	// 4. Suspend or Resume the Actor. The spec is desired state; status is only
+	// an observation and must not drive lifecycle decisions because a stale
+	// reconciliation may overwrite it.
+	if task.Spec != nil && task.Spec.Suspend {
 		slog.Info("suspending actor on Substrate", "actor", actorName)
 		if err := r.client.SuspendActor(ctx, atespace, actorName); err != nil {
 			slog.Warn("could not suspend actor on Substrate", "error", err)
