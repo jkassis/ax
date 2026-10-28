@@ -58,6 +58,28 @@ func TestRun_StartsTaskCommandWithInjectedEnv(t *testing.T) {
 	}
 }
 
+func TestRun_UsesDeclaredWorkingDirectory(t *testing.T) {
+	h := newHarness(t)
+	workingDirectory := t.TempDir()
+	outFile := filepath.Join(t.TempDir(), "cwd.txt")
+	h.task.Spec.WorkingDirectory = workingDirectory
+	h.task.Spec.Command = []string{"sh", "-c", "pwd > " + outFile}
+
+	exit := h.runUntilCommandExits(t)
+	if exit.Err != nil || exit.ExitCode != 0 {
+		t.Fatalf("unexpected exit: %+v", exit)
+	}
+
+	out, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir, _ := filepath.EvalSymlinks(workingDirectory)
+	if gotDir, _ := filepath.EvalSymlinks(strings.TrimSpace(string(out))); gotDir != wantDir {
+		t.Errorf("command cwd = %q, want declared directory %q", gotDir, wantDir)
+	}
+}
+
 func TestRun_ReportsCommandExitCode(t *testing.T) {
 	h := newHarness(t)
 	h.task.Spec.Command = []string{"sh", "-c", "exit 3"}

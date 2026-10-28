@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ import (
 const (
 	APIVersion    = "ax.io/v1alpha1"
 	KindTask      = "Task"
+	KindGateway   = "Gateway"
 	KindWorkspace = "Workspace"
 	KindModel     = "Model"
 
@@ -196,6 +198,9 @@ func normalizeModel(doc map[string]any) {
 func (t *Task) MarshalYAML() (any, error)        { return marshalYAML(t) }
 func (t *Task) UnmarshalYAML(n *yaml.Node) error { return unmarshalYAML(n, t, nil) }
 
+func (g *Gateway) MarshalYAML() (any, error)        { return marshalYAML(g) }
+func (g *Gateway) UnmarshalYAML(n *yaml.Node) error { return unmarshalYAML(n, g, nil) }
+
 func (w *Workspace) MarshalYAML() (any, error)        { return marshalYAML(w) }
 func (w *Workspace) UnmarshalYAML(n *yaml.Node) error { return unmarshalYAML(n, w, normalizeWorkspace) }
 
@@ -313,6 +318,11 @@ func ValidateTask(t *Task) error {
 	spec := t.GetSpec()
 	if spec == nil {
 		return nil
+	}
+	if workingDirectory := spec.GetWorkingDirectory(); workingDirectory != "" {
+		if !path.IsAbs(workingDirectory) || path.Clean(workingDirectory) != workingDirectory {
+			return fmt.Errorf("spec.workingDirectory %q must be an absolute clean path", workingDirectory)
+		}
 	}
 	refs := spec.WorkspaceRefs()
 	paths := spec.WorkspacePaths()

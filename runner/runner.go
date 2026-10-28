@@ -172,7 +172,10 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
-	cmd.Dir = wsPath
+	cmd.Dir = cfg.Task.GetSpec().GetWorkingDirectory()
+	if cmd.Dir == "" {
+		cmd.Dir = wsPath
+	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

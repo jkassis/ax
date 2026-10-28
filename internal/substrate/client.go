@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // ClientOptions configures connection to the Substrate Control API server.
@@ -245,27 +246,35 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Image:   image,
 			Command: command,
 			Env:     envList,
-			Readyz: &ateapipb.ContainerReadyz{
+			WakeupProbe: &ateapipb.ContainerWakeupProbe{
 				HttpGet: &ateapipb.HTTPGetAction{
 					Path: "/readyz",
 					Port: 80,
 				},
+				TimeoutSeconds: 600,
 			},
 			VolumeMounts: []*ateapipb.VolumeMount{{
 				Name:      "workspace",
 				MountPath: "/workspace",
 			}},
+			SecurityContext: &ateapipb.SecurityContext{
+				Capabilities:           &ateapipb.Capabilities{Drop: []string{"ALL"}},
+				RunAsUser:              65532,
+				RunAsGroup:             65532,
+				ReadOnlyRootFilesystem: true,
+				NoNewPrivileges:        true,
+			},
 		}},
 		Volumes: []*ateapipb.Volume{{
 			Name:       "workspace",
 			DurableDir: &ateapipb.DurableDirVolumeSource{},
 		}},
-		SnapshotsConfig: &ateapipb.SnapshotsConfig{
+		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation: snapshotsBucket,
 			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
 			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
 			OnResume: &ateapipb.OnResumeConfig{
-				FromData: ateapipb.ResumeSource_RESUME_SOURCE_GOLDEN,
+				FromData: ateapipb.ResumeSource_RESUME_SOURCE_COLD_BOOT,
 			},
 		},
 		SandboxConfig: &ateapipb.SandboxConfig{
@@ -456,4 +465,79 @@ func (c *Client) DeleteActorTemplate(ctx context.Context, atespace, templateName
 	return nil
 }
 
+// ApplyEgressPolicy applies egress rules to the Actor from a Gateway's allowlist.
+func (c *Client) ApplyEgressPolicy(ctx context.Context, atespace, actorName string, allowlist *v1alpha1.EgressAllowlist) error {
+	rules, err := egressRules(allowlist)
+	if err != nil {
+		return err
+	}
 
+	egressPolicy := &ateapipb.EgressPolicy{
+		Metadata: &ateapipb.ResourceMetadata{
+			Atespace: atespace,
+			Name:     "default",
+		},
+		Rules: rules,
+	}
+
+	actorRef := &ateapipb.ObjectRef{
+		Atespace: atespace,
+		Name:     actorName,
+	}
+
+	// Try creating the policy; if it already exists, update it.
+	createReq := &ateapipb.CreateActorEgressPolicyRequest{
+		Actor:        actorRef,
+		EgressPolicy: egressPolicy,
+	}
+	_, err = c.control.CreateActorEgressPolicy(ctx, createReq)
+	if err != nil {
+		if status.Code(err) == codes.AlreadyExists {
+			existing, getErr := c.control.GetActorEgressPolicy(ctx, &ateapipb.GetActorEgressPolicyRequest{
+				Actor: actorRef,
+			})
+			if getErr == nil && existing != nil && existing.Metadata != nil {
+				egressPolicy.Metadata.Uid = existing.Metadata.Uid
+				egressPolicy.Metadata.Version = existing.Metadata.Version
+			}
+			updateReq := &ateapipb.UpdateActorEgressPolicyRequest{
+				Actor:        actorRef,
+				EgressPolicy: egressPolicy,
+			}
+			_, updateErr := c.control.UpdateActorEgressPolicy(ctx, updateReq)
+			if updateErr != nil {
+				return fmt.Errorf("updating egress policy on %s/%s: %w", atespace, actorName, updateErr)
+			}
+			return nil
+		}
+		slog.Warn("failed to apply egress policy", "actor", actorName, "error", err)
+		return fmt.Errorf("creating egress policy on %s/%s: %w", atespace, actorName, err)
+	}
+	return nil
+}
+
+func egressRules(allowlist *v1alpha1.EgressAllowlist) ([]*ateapipb.EgressRule, error) {
+	var rules []*ateapipb.EgressRule
+	if allowlist != nil {
+		for i, h := range allowlist.Hosts {
+			if h == nil || h.Host == "" {
+				return nil, fmt.Errorf("egress allowlist host %d is empty", i)
+			}
+			if h.Port < 1 || h.Port > 65535 {
+				return nil, fmt.Errorf("egress allowlist host %q has invalid port %d", h.Host, h.Port)
+			}
+			rule := &ateapipb.EgressRule{Ports: []int32{h.Port}}
+			switch {
+			case h.Host == "*" || h.Host == "0.0.0.0/0" || h.Host == "::/0":
+				rule.Public = &emptypb.Empty{}
+			case strings.Contains(h.Host, "/"):
+				rule.Cidrs = &ateapipb.CIDRRule{Cidrs: []string{h.Host}}
+			default:
+				rule.Hostnames = &ateapipb.HostnameRule{Patterns: []string{h.Host}}
+			}
+			rules = append(rules, rule)
+		}
+	}
+
+	return rules, nil
+}

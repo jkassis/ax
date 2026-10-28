@@ -12,6 +12,18 @@
 
 AX is a high-throughput, declarative orchestrator to run billions of autonomous agent workloads in a cluster. It runs on top of [Agent Substrate](https://github.com/agent-substrate/substrate) for sandboxed execution and is built to run billions of tasks per cluster. If you have used Kubernetes, `ax` will feel similar.
 
+## Source authority
+
+This repository is authoritative for the AX control plane, API schema, and
+product-neutral Rust task/session integration crates. The Rust packages live in
+`crates/ax-client` and `crates/session-contract`; downstream products should pin
+an exact AX revision rather than importing these contracts from a product
+repository.
+
+The control-plane API preserves the deployed `UpdateTask` and Gateway contract
+while also exposing `CreateTask` for newer immutable-create clients. Protobuf
+field numbers used by deployed clients remain stable.
+
 ```yaml
 # task.yaml
 apiVersion: ax.io/v1alpha1

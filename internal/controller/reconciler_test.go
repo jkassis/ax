@@ -16,6 +16,7 @@ package controller_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"testing"
@@ -43,6 +44,7 @@ type mockControlServer struct {
 	deletedTemplates []string
 	crashedActor     string
 	revertedActors   []string
+	resumeErr        error
 }
 
 // noSecrets is a SecretResolver for tests: it never finds a key and never touches a cluster.
@@ -99,6 +101,9 @@ func (m *mockControlServer) ResumeActor(ctx context.Context, req *ateapipb.Resum
 		name = req.Actor.Name
 	}
 	m.resumedActors = append(m.resumedActors, name)
+	if m.resumeErr != nil {
+		return nil, m.resumeErr
+	}
 	wIP := "10.244.1.42"
 	if m.workerIP != "" {
 		wIP = m.workerIP
@@ -126,7 +131,6 @@ func (m *mockControlServer) SuspendActor(ctx context.Context, req *ateapipb.Susp
 	m.suspendedActors = append(m.suspendedActors, name)
 	return &ateapipb.SuspendActorResponse{}, nil
 }
-
 
 func (m *mockControlServer) GetActor(_ context.Context, req *ateapipb.GetActorRequest) (*ateapipb.Actor, error) {
 	return &ateapipb.Actor{
@@ -509,5 +513,45 @@ func TestEnsureActor_RevertsCrashedActor(t *testing.T) {
 	}
 	if len(mockSrv.revertedActors) != 1 || len(mockSrv.deletedActors) != 0 {
 		t.Errorf("crashed actor: reverted %v, deleted %v; want reverted only", mockSrv.revertedActors, mockSrv.deletedActors)
+	}
+}
+
+func TestTaskReconciler_DeletesActorAfterFailedResume(t *testing.T) {
+	ctx := context.Background()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer lis.Close()
+
+	mockSrv := &mockControlServer{resumeErr: errors.New("no free workers available")}
+	grpcServer := grpc.NewServer()
+	ateapipb.RegisterControlServer(grpcServer, mockSrv)
+	go grpcServer.Serve(lis)
+	defer grpcServer.Stop()
+
+	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to create substrate client: %v", err)
+	}
+	defer client.Close()
+
+	reconciler := controller.NewTaskReconciler(client, "test-template", "ax-system")
+	reconciler.SecretResolver = noSecrets
+	task := &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "capacity-task", Atespace: "default"},
+		Spec:     &v1alpha1.TaskSpec{Image: "example.invalid/runtime"},
+		Status:   &v1alpha1.TaskStatus{Phase: "Pending"},
+	}
+
+	reconciled, err := reconciler.Reconcile(ctx, task, nil)
+	if err == nil {
+		t.Fatal("expected resume failure")
+	}
+	if reconciled.Status.Phase != "Failed" {
+		t.Fatalf("expected failed phase, got %q", reconciled.Status.Phase)
+	}
+	if len(mockSrv.deletedActors) != 1 || mockSrv.deletedActors[0] != "capacity-task" {
+		t.Fatalf("expected failed actor cleanup, got %v", mockSrv.deletedActors)
 	}
 }

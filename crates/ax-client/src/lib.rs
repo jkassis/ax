@@ -1,0 +1,287 @@
+//! Product-neutral AX transport for an admitted agent-session specification.
+
+use agent_session_contract::{RouteProtocol, SessionSpec};
+use anyhow::{Context, Result};
+use std::{collections::BTreeMap, time::Duration};
+use tonic::{transport::Channel, Code, Request};
+
+mod wire {
+    tonic::include_proto!("ax.v1alpha1");
+}
+
+use wire::{
+    ax_client::AxClient, DeleteGatewayRequest, DeleteTaskRequest, EgressAllowlist, EgressConfig,
+    EnvVar, Gateway, GatewayRef, GatewaySpec, GetTaskRequest, HostRule, Listener, ObjectMeta,
+    ResourceList, ResourceReqs, Task, TaskSpec, UpdateGatewayRequest, UpdateTaskRequest,
+    WorkspaceRef,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeLocator {
+    pub atespace: String,
+    pub task: String,
+    pub actor: String,
+}
+
+impl RuntimeLocator {
+    pub fn upstream(&self) -> String {
+        format!("ax://{}/{}/", self.atespace, self.actor)
+    }
+}
+
+#[derive(Clone)]
+pub struct AgentAxClient {
+    client: AxClient<Channel>,
+    timeout: Duration,
+}
+
+impl AgentAxClient {
+    pub fn connect_lazy(endpoint: String) -> Result<Self> {
+        let endpoint = tonic::transport::Endpoint::from_shared(endpoint)?
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(300));
+        Ok(Self {
+            client: AxClient::new(endpoint.connect_lazy()),
+            timeout: Duration::from_secs(180),
+        })
+    }
+
+    pub async fn ensure(
+        &self,
+        atespace: &str,
+        task_name: &str,
+        spec: &SessionSpec,
+        runtime_env: BTreeMap<String, String>,
+        egress_hosts: Vec<(String, u16)>,
+    ) -> Result<RuntimeLocator> {
+        spec.validate()?;
+        validate_ax_name(atespace)?;
+        validate_ax_name(task_name)?;
+        let metadata = ObjectMeta {
+            name: task_name.into(),
+            atespace: atespace.into(),
+            creation_timestamp: None,
+        };
+        let gateway = Gateway {
+            api_version: "ax.io/v1alpha1".into(),
+            kind: "Gateway".into(),
+            metadata: Some(metadata.clone()),
+            spec: Some(GatewaySpec {
+                listeners: spec
+                    .routes
+                    .iter()
+                    .map(|route| Listener {
+                        name: route.port_name.clone(),
+                        port: i32::from(route.port),
+                        protocol: match route.protocol {
+                            RouteProtocol::Http => "HTTP",
+                            RouteProtocol::Grpc => "HTTP2",
+                        }
+                        .into(),
+                    })
+                    .collect(),
+                egress: Some(EgressConfig {
+                    allowlist: Some(EgressAllowlist {
+                        hosts: egress_hosts
+                            .into_iter()
+                            .map(|(host, port)| HostRule {
+                                host,
+                                port: i32::from(port),
+                            })
+                            .collect(),
+                    }),
+                }),
+            }),
+        };
+        let task = Task {
+            api_version: "ax.io/v1alpha1".into(),
+            kind: "Task".into(),
+            metadata: Some(metadata),
+            spec: Some(TaskSpec {
+                suspend: false,
+                image: spec.runtime.image.clone(),
+                command: spec.runtime.command.clone(),
+                env: runtime_env
+                    .into_iter()
+                    .map(|(name, value)| EnvVar { name, value })
+                    .collect(),
+                resources: Some(ResourceReqs {
+                    requests: Some(ResourceList {
+                        cpu: spec.runtime.resources.request_cpu.clone(),
+                        memory: spec.runtime.resources.request_memory.clone(),
+                    }),
+                    limits: Some(ResourceList {
+                        cpu: spec.runtime.resources.limit_cpu.clone(),
+                        memory: spec.runtime.resources.limit_memory.clone(),
+                    }),
+                }),
+                workspaces: spec
+                    .workspaces
+                    .iter()
+                    .map(|workspace| WorkspaceRef {
+                        name: workspace.name.clone(),
+                        path: workspace.mount_path.clone(),
+                        goal: String::new(),
+                    })
+                    .collect(),
+                gateway: Some(GatewayRef {
+                    name: task_name.into(),
+                }),
+                debug: false,
+                working_directory: String::new(),
+            }),
+            status: None,
+        };
+        let mut client = self.client.clone();
+        client
+            .update_gateway(Request::new(UpdateGatewayRequest {
+                gateway: Some(gateway),
+            }))
+            .await
+            .context("apply AX gateway")?;
+        match client
+            .get_task(Request::new(GetTaskRequest {
+                atespace: atespace.into(),
+                name: task_name.into(),
+            }))
+            .await
+        {
+            Ok(response) => {
+                let existing = response.into_inner();
+                if let Some(status) = existing.status.as_ref() {
+                    if status.phase == "Running" && validate_ax_name(&status.actor).is_ok() {
+                        return Ok(RuntimeLocator {
+                            atespace: atespace.into(),
+                            task: task_name.into(),
+                            actor: status.actor.clone(),
+                        });
+                    }
+                }
+                client
+                    .delete_task(Request::new(DeleteTaskRequest {
+                        atespace: atespace.into(),
+                        name: task_name.into(),
+                    }))
+                    .await
+                    .context("delete prior AX task")?;
+                self.await_absent(atespace, task_name).await?;
+            }
+            Err(status) if status.code() == Code::NotFound => {}
+            Err(status) => return Err(status).context("inspect AX task"),
+        }
+        let mut current = client
+            .update_task(Request::new(UpdateTaskRequest { task: Some(task) }))
+            .await
+            .context("apply AX task")?
+            .into_inner();
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        loop {
+            let status = current.status.as_ref().context("AX task omitted status")?;
+            if status.phase == "Running" {
+                validate_ax_name(&status.actor)?;
+                return Ok(RuntimeLocator {
+                    atespace: atespace.into(),
+                    task: task_name.into(),
+                    actor: status.actor.clone(),
+                });
+            }
+            if status.phase == "Failed" {
+                anyhow::bail!("AX task entered failed phase");
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!("AX task did not reach running before deadline");
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            current = client
+                .get_task(Request::new(GetTaskRequest {
+                    atespace: atespace.into(),
+                    name: task_name.into(),
+                }))
+                .await
+                .context("observe AX task")?
+                .into_inner();
+        }
+    }
+
+    pub async fn remove(&self, atespace: &str, task_name: &str) -> Result<()> {
+        validate_ax_name(atespace)?;
+        validate_ax_name(task_name)?;
+        let mut client = self.client.clone();
+        if let Err(status) = client
+            .delete_task(Request::new(DeleteTaskRequest {
+                atespace: atespace.into(),
+                name: task_name.into(),
+            }))
+            .await
+        {
+            if status.code() != Code::NotFound {
+                return Err(status).context("delete AX task");
+            }
+        }
+        if let Err(status) = client
+            .delete_gateway(Request::new(DeleteGatewayRequest {
+                atespace: atespace.into(),
+                name: task_name.into(),
+            }))
+            .await
+        {
+            if status.code() != Code::NotFound {
+                return Err(status).context("delete AX gateway");
+            }
+        }
+        Ok(())
+    }
+
+    async fn await_absent(&self, atespace: &str, task_name: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        let mut client = self.client.clone();
+        loop {
+            match client
+                .get_task(Request::new(GetTaskRequest {
+                    atespace: atespace.into(),
+                    name: task_name.into(),
+                }))
+                .await
+            {
+                Err(status) if status.code() == Code::NotFound => return Ok(()),
+                Ok(_) => {}
+                Err(status) => return Err(status).context("await AX task removal"),
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!("prior AX task was not removed before deadline");
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+}
+
+fn validate_ax_name(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 63
+        || value.starts_with('-')
+        || value.ends_with('-')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        anyhow::bail!("invalid AX name");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_transport_names_and_locator() {
+        assert!(validate_ax_name("coach-0199d9d2").is_ok());
+        assert!(validate_ax_name("Coach/unsafe").is_err());
+        let locator = RuntimeLocator {
+            atespace: "coach-user".into(),
+            task: "session-one".into(),
+            actor: "actor-one".into(),
+        };
+        assert_eq!(locator.upstream(), "ax://coach-user/actor-one/");
+    }
+}

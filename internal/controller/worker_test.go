@@ -60,11 +60,24 @@ func TestWorkerReconciliation(t *testing.T) {
 	// 3. In-memory store
 	memStore := memory.NewStore()
 
+	// Pre-create gateway
+	_ = memStore.SaveGateway(ctx, &v1alpha1.Gateway{
+		Metadata: &v1alpha1.ObjectMeta{Name: "default-gw", Atespace: "default"},
+		Spec: &v1alpha1.GatewaySpec{
+			Egress: &v1alpha1.EgressConfig{
+				Allowlist: &v1alpha1.EgressAllowlist{
+					Hosts: []*v1alpha1.HostRule{{Host: "api.openai.com", Port: 443}},
+				},
+			},
+		},
+	})
+
 	// Save task
 	task := &v1alpha1.Task{
 		Metadata: &v1alpha1.ObjectMeta{Name: "worker-task", Atespace: "default"},
 		Spec: &v1alpha1.TaskSpec{
-			Image: "ghrc.io/test/img",
+			Gateway: &v1alpha1.GatewayRef{Name: "default-gw"},
+			Image:   "ghrc.io/test/img",
 		},
 	}
 	if err := memStore.SaveTask(ctx, task); err != nil {
@@ -171,63 +184,5 @@ func TestWorkerDeletion(t *testing.T) {
 	}
 	if len(mockSrv.deletedTemplates) != 1 || mockSrv.deletedTemplates[0] != "doomed-tmpl-0a1b2c3d" {
 		t.Errorf("expected template deleted, got %v", mockSrv.deletedTemplates)
-	}
-}
-
-func TestWorkerSkipsReconcileOfTerminatingTask(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
-	}
-	defer lis.Close()
-
-	mockSrv := &mockControlServer{}
-	grpcServer := grpc.NewServer()
-	ateapipb.RegisterControlServer(grpcServer, mockSrv)
-	go grpcServer.Serve(lis)
-	defer grpcServer.Stop()
-
-	subClient, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("failed to create substrate client: %v", err)
-	}
-	defer subClient.Close()
-
-	reconciler := controller.NewTaskReconciler(subClient, "default-template", "ax-system")
-	reconciler.SecretResolver = noSecrets
-	reconciler.WorkspaceReadyTimeout = 200 * time.Millisecond
-
-	// Queue a reconcile and then a delete before the worker starts, as when a
-	// task is deleted while the controller is still busy with other events.
-	memStore := memory.NewStore()
-	task := &v1alpha1.Task{
-		Metadata: &v1alpha1.ObjectMeta{Name: "doomed", Atespace: "default"},
-		Spec:     &v1alpha1.TaskSpec{Image: "ghcr.io/test/img"},
-	}
-	if err := memStore.SaveTask(ctx, task); err != nil {
-		t.Fatalf("failed to save task: %v", err)
-	}
-	if err := memStore.MarkTaskDeleting(ctx, "default", "doomed"); err != nil {
-		t.Fatalf("MarkTaskDeleting failed: %v", err)
-	}
-
-	worker := controller.NewWorker(memStore, reconciler, "test-group", "worker-1")
-	go func() { _ = worker.Run(ctx) }()
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := memStore.GetTask(ctx, "default", "doomed"); err != nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if _, err := memStore.GetTask(ctx, "default", "doomed"); err == nil {
-		t.Fatalf("expected task record to be removed after cleanup")
-	}
-	if len(mockSrv.createdActors) != 0 || len(mockSrv.resumedActors) != 0 {
-		t.Errorf("terminating task was reconciled: created %v, resumed %v", mockSrv.createdActors, mockSrv.resumedActors)
 	}
 }

@@ -1,0 +1,18 @@
+[package]
+name = "agent-ax-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+
+[dependencies]
+agent-session-contract = { path = "../session-contract" }
+anyhow = "1"
+prost = "0.14"
+prost-types = "0.14"
+tokio = { version = "1", features = ["time"] }
+tonic = "0.14"
+tonic-prost = "0.14"
+
+[build-dependencies]
+protoc-bin-vendored = "3"
+tonic-prost-build = "0.14"
