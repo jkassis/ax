@@ -134,13 +134,13 @@ impl AgentAxClient {
         };
         let mut client = self.client.clone();
         client
-            .update_gateway(Request::new(UpdateGatewayRequest {
+            .update_gateway(self.request(UpdateGatewayRequest {
                 gateway: Some(gateway),
             }))
             .await
             .context("apply AX gateway")?;
         match client
-            .get_task(Request::new(GetTaskRequest {
+            .get_task(self.request(GetTaskRequest {
                 atespace: atespace.into(),
                 name: task_name.into(),
             }))
@@ -158,7 +158,7 @@ impl AgentAxClient {
                     }
                 }
                 client
-                    .delete_task(Request::new(DeleteTaskRequest {
+                    .delete_task(self.request(DeleteTaskRequest {
                         atespace: atespace.into(),
                         name: task_name.into(),
                     }))
@@ -169,11 +169,17 @@ impl AgentAxClient {
             Err(status) if status.code() == Code::NotFound => {}
             Err(status) => return Err(status).context("inspect AX task"),
         }
-        let mut current = client
-            .update_task(Request::new(UpdateTaskRequest { task: Some(task) }))
+        let mut current = match client
+            .update_task(self.request(UpdateTaskRequest { task: Some(task) }))
             .await
-            .context("apply AX task")?
-            .into_inner();
+        {
+            Ok(response) => response.into_inner(),
+            Err(status) if uncertain_mutation(status.code()) => {
+                self.observe_uncertain_task_update(&mut client, atespace, task_name, status)
+                    .await?
+            }
+            Err(status) => return Err(status).context("apply AX task"),
+        };
         let deadline = tokio::time::Instant::now() + self.timeout;
         loop {
             let status = current.status.as_ref().context("AX task omitted status")?;
@@ -192,14 +198,17 @@ impl AgentAxClient {
                 anyhow::bail!("AX task did not reach running before deadline");
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
-            current = client
-                .get_task(Request::new(GetTaskRequest {
+            current = tokio::time::timeout_at(
+                deadline,
+                client.get_task(self.request(GetTaskRequest {
                     atespace: atespace.into(),
                     name: task_name.into(),
-                }))
-                .await
-                .context("observe AX task")?
-                .into_inner();
+                })),
+            )
+            .await
+            .context("AX readiness observation exceeded deadline")?
+            .context("observe AX task")?
+            .into_inner();
         }
     }
 
@@ -208,7 +217,7 @@ impl AgentAxClient {
         validate_ax_name(task_name)?;
         let mut client = self.client.clone();
         if let Err(status) = client
-            .delete_task(Request::new(DeleteTaskRequest {
+            .delete_task(self.request(DeleteTaskRequest {
                 atespace: atespace.into(),
                 name: task_name.into(),
             }))
@@ -219,7 +228,7 @@ impl AgentAxClient {
             }
         }
         if let Err(status) = client
-            .delete_gateway(Request::new(DeleteGatewayRequest {
+            .delete_gateway(self.request(DeleteGatewayRequest {
                 atespace: atespace.into(),
                 name: task_name.into(),
             }))
@@ -236,13 +245,16 @@ impl AgentAxClient {
         let deadline = tokio::time::Instant::now() + self.timeout;
         let mut client = self.client.clone();
         loop {
-            match client
-                .get_task(Request::new(GetTaskRequest {
+            let observation = tokio::time::timeout_at(
+                deadline,
+                client.get_task(self.request(GetTaskRequest {
                     atespace: atespace.into(),
                     name: task_name.into(),
-                }))
-                .await
-            {
+                })),
+            )
+            .await
+            .context("AX task-removal observation exceeded deadline")?;
+            match observation {
                 Err(status) if status.code() == Code::NotFound => return Ok(()),
                 Ok(_) => {}
                 Err(status) => return Err(status).context("await AX task removal"),
@@ -253,6 +265,57 @@ impl AgentAxClient {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
+
+    async fn observe_uncertain_task_update(
+        &self,
+        client: &mut AxClient<Channel>,
+        atespace: &str,
+        task_name: &str,
+        submission_error: tonic::Status,
+    ) -> Result<Task> {
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        loop {
+            let observation = match tokio::time::timeout_at(
+                deadline,
+                client.get_task(self.request(GetTaskRequest {
+                    atespace: atespace.into(),
+                    name: task_name.into(),
+                })),
+            )
+            .await
+            {
+                Ok(observation) => observation,
+                Err(_) => {
+                    return Err(submission_error)
+                        .context("AX task update outcome remained uncertain before deadline")
+                }
+            };
+            match observation {
+                Ok(response) => return Ok(response.into_inner()),
+                Err(status)
+                    if status.code() == Code::NotFound || uncertain_mutation(status.code()) => {}
+                Err(status) => return Err(status).context("observe uncertain AX task update"),
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(submission_error)
+                    .context("AX task update outcome remained uncertain before deadline");
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    fn request<T>(&self, message: T) -> Request<T> {
+        let mut request = Request::new(message);
+        request.set_timeout(self.timeout);
+        request
+    }
+}
+
+fn uncertain_mutation(code: Code) -> bool {
+    matches!(
+        code,
+        Code::Cancelled | Code::Unknown | Code::DeadlineExceeded | Code::Unavailable
+    )
 }
 
 fn validate_ax_name(value: &str) -> Result<()> {
@@ -283,5 +346,27 @@ mod tests {
             actor: "actor-one".into(),
         };
         assert_eq!(locator.upstream(), "ax://coach-user/actor-one/");
+    }
+
+    #[test]
+    fn classifies_only_ambiguous_transport_failures_as_uncertain() {
+        for code in [
+            Code::Cancelled,
+            Code::Unknown,
+            Code::DeadlineExceeded,
+            Code::Unavailable,
+        ] {
+            assert!(uncertain_mutation(code), "{code:?}");
+        }
+        for code in [
+            Code::InvalidArgument,
+            Code::NotFound,
+            Code::AlreadyExists,
+            Code::FailedPrecondition,
+            Code::PermissionDenied,
+            Code::Unauthenticated,
+        ] {
+            assert!(!uncertain_mutation(code), "{code:?}");
+        }
     }
 }
