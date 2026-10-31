@@ -290,10 +290,9 @@ impl AgentAxClient {
                         .context("AX task update outcome remained uncertain before deadline")
                 }
             };
-            match observation {
-                Ok(response) => return Ok(response.into_inner()),
-                Err(status)
-                    if status.code() == Code::NotFound || uncertain_mutation(status.code()) => {}
+            match classify_uncertain_observation(observation) {
+                Ok(Some(task)) => return Ok(task),
+                Ok(None) => {}
                 Err(status) => return Err(status).context("observe uncertain AX task update"),
             }
             if tokio::time::Instant::now() >= deadline {
@@ -316,6 +315,18 @@ fn uncertain_mutation(code: Code) -> bool {
         code,
         Code::Cancelled | Code::Unknown | Code::DeadlineExceeded | Code::Unavailable
     )
+}
+
+fn classify_uncertain_observation(
+    observation: std::result::Result<tonic::Response<Task>, tonic::Status>,
+) -> std::result::Result<Option<Task>, tonic::Status> {
+    match observation {
+        Ok(response) => Ok(Some(response.into_inner())),
+        Err(status) if status.code() == Code::NotFound || uncertain_mutation(status.code()) => {
+            Ok(None)
+        }
+        Err(status) => Err(status),
+    }
 }
 
 fn validate_ax_name(value: &str) -> Result<()> {
@@ -368,5 +379,39 @@ mod tests {
         ] {
             assert!(!uncertain_mutation(code), "{code:?}");
         }
+    }
+
+    #[test]
+    fn uncertain_start_observation_converges_on_the_committed_named_task() {
+        let committed = Task {
+            api_version: "ax.io/v1alpha1".into(),
+            kind: "Task".into(),
+            metadata: Some(ObjectMeta {
+                name: "coach-session".into(),
+                atespace: "coach-user".into(),
+                creation_timestamp: None,
+            }),
+            spec: None,
+            status: None,
+        };
+        let observations = [
+            Err(tonic::Status::not_found("not visible yet")),
+            Err(tonic::Status::unavailable("retry observation")),
+            Ok(tonic::Response::new(committed.clone())),
+        ];
+
+        let mut resolved = None;
+        for observation in observations {
+            if let Some(task) = classify_uncertain_observation(observation).unwrap() {
+                resolved = Some(task);
+                break;
+            }
+        }
+        assert_eq!(resolved, Some(committed));
+
+        let terminal =
+            classify_uncertain_observation(Err(tonic::Status::permission_denied("terminal")))
+                .unwrap_err();
+        assert_eq!(terminal.code(), Code::PermissionDenied);
     }
 }
