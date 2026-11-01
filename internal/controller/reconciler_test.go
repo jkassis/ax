@@ -45,6 +45,8 @@ type mockControlServer struct {
 	crashedActor     string
 	revertedActors   []string
 	resumeErr        error
+	egressPolicies   map[string]*ateapipb.EgressPolicy
+	operations       []string
 }
 
 // noSecrets is a SecretResolver for tests: it never finds a key and never touches a cluster.
@@ -101,6 +103,7 @@ func (m *mockControlServer) ResumeActor(ctx context.Context, req *ateapipb.Resum
 		name = req.Actor.Name
 	}
 	m.resumedActors = append(m.resumedActors, name)
+	m.operations = append(m.operations, "resume:"+name)
 	if m.resumeErr != nil {
 		return nil, m.resumeErr
 	}
@@ -121,6 +124,19 @@ func (m *mockControlServer) ResumeActor(ctx context.Context, req *ateapipb.Resum
 		},
 		Resumed: true,
 	}, nil
+}
+
+func (m *mockControlServer) CreateActorEgressPolicy(_ context.Context, req *ateapipb.CreateActorEgressPolicyRequest) (*ateapipb.EgressPolicy, error) {
+	name := req.GetActor().GetName()
+	if m.egressPolicies == nil {
+		m.egressPolicies = make(map[string]*ateapipb.EgressPolicy)
+	}
+	if _, exists := m.egressPolicies[name]; exists {
+		return nil, status.Error(codes.AlreadyExists, "egress policy exists")
+	}
+	m.egressPolicies[name] = req.GetEgressPolicy()
+	m.operations = append(m.operations, "policy:"+name)
+	return req.GetEgressPolicy(), nil
 }
 
 func (m *mockControlServer) SuspendActor(ctx context.Context, req *ateapipb.SuspendActorRequest) (*ateapipb.SuspendActorResponse, error) {

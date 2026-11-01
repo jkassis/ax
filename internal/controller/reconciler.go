@@ -93,6 +93,12 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 
 // Reconcile handles the reconciliation loop for a single Task.
 func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, workspaces ...*v1alpha1.Workspace) (*v1alpha1.Task, error) {
+	return r.ReconcileWithGateway(ctx, task, nil, workspaces...)
+}
+
+// ReconcileWithGateway reconciles a Task and applies its resolved Gateway
+// egress policy before the Actor can execute user code.
+func (r *TaskReconciler) ReconcileWithGateway(ctx context.Context, task *v1alpha1.Task, gateway *v1alpha1.Gateway, workspaces ...*v1alpha1.Workspace) (*v1alpha1.Task, error) {
 	if task.Metadata == nil {
 		task.Metadata = &v1alpha1.ObjectMeta{}
 	}
@@ -190,6 +196,17 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		r.setNotReady(task, "ActorCreationFailed", err.Error(), now)
 		task.Status.Phase = "Failed"
 		return task, fmt.Errorf("ensuring actor: %w", err)
+	}
+
+	// Substrate denies egress when an Actor has no policy. Apply the Gateway's
+	// bounded allowlist before resume so the Actor never starts with a missing or
+	// stale policy. A Task without a bound Gateway retains deny-by-default.
+	if gateway != nil && gateway.GetSpec().GetEgress() != nil {
+		if err := r.client.ApplyEgressPolicy(ctx, atespace, actorName, gateway.GetSpec().GetEgress().GetAllowlist()); err != nil {
+			r.setNotReady(task, "EgressPolicyFailed", err.Error(), now)
+			task.Status.Phase = "Failed"
+			return task, fmt.Errorf("applying actor egress policy: %w", err)
+		}
 	}
 
 	// 4. Suspend or Resume the Actor. The spec is desired state; status is only

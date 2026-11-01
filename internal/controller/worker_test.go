@@ -112,6 +112,13 @@ func TestWorkerReconciliation(t *testing.T) {
 	if finalTask.Status.WorkerIp != "10.244.1.42" {
 		t.Errorf("expected worker IP '10.244.1.42', got %q", finalTask.Status.WorkerIp)
 	}
+	policy := mockSrv.egressPolicies["worker-task"]
+	if policy == nil || len(policy.GetRules()) != 1 || policy.GetRules()[0].GetHostnames().GetPatterns()[0] != "api.openai.com" {
+		t.Fatalf("gateway egress policy was not applied: %+v", policy)
+	}
+	if len(mockSrv.operations) < 2 || mockSrv.operations[0] != "policy:worker-task" || mockSrv.operations[1] != "resume:worker-task" {
+		t.Fatalf("egress policy must precede actor resume, operations: %v", mockSrv.operations)
+	}
 }
 
 func TestWorkerDeletion(t *testing.T) {

@@ -148,7 +148,18 @@ func (w *Worker) processEvent(ctx context.Context, ev store.TaskEvent) error {
 		}
 	}
 
-	reconciled, err := w.reconciler.Reconcile(ctx, task, workspaces...)
+	var gateway *v1alpha1.Gateway
+	if task.Spec != nil && task.Spec.Gateway != nil && task.Spec.Gateway.Name != "" {
+		gateway, err = w.store.GetGateway(ctx, task.Metadata.Atespace, task.Spec.Gateway.Name)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return fmt.Errorf("gateway %s/%s not found", task.Metadata.Atespace, task.Spec.Gateway.Name)
+			}
+			return fmt.Errorf("fetching gateway %s/%s: %w", task.Metadata.Atespace, task.Spec.Gateway.Name, err)
+		}
+	}
+
+	reconciled, err := w.reconciler.ReconcileWithGateway(ctx, task, gateway, workspaces...)
 	if err != nil {
 		task.Status.Phase = "Failed"
 		_ = w.store.UpdateTaskStatus(ctx, task.Metadata.Atespace, task.Metadata.Name, task.Status)
